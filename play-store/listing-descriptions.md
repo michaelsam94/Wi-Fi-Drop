@@ -40,11 +40,10 @@ Location and Nearby Devices access are used for Android Wi-Fi peer discovery on 
 Questions or feedback: support@wifidrop.app
 
 ## What's new (500 chars max)
-Version 1.0 — initial release
+Version 1.1
 
-• Send files and folders to nearby devices over local Wi-Fi
-• Receive mode with customizable device name
-• Web Share with QR code and browser download link
-• Live transfer progress with speed and ETA
-• Local transfer history for sent and received files
-• Material Design 3 interface
+• Fixed app freezes during file selection and web share
+• Added loading indicators for transfers and setup steps
+• Improved background processing for faster, smoother UI
+• Removed unnecessary photo/video permissions (uses system file picker)
+• Performance and stability improvements

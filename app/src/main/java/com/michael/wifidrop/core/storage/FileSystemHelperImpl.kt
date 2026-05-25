@@ -58,7 +58,7 @@ class FileSystemHelperImpl(
         return 0L
     }
 
-    override suspend fun walkTree(rootUriString: String): Result<List<FolderEntry>> = withContext(dispatchers.default) {
+    override suspend fun walkTree(rootUriString: String): Result<List<FolderEntry>> = withContext(dispatchers.io) {
         runCatching {
             val entries = mutableListOf<FolderEntry>()
             val rootUri = Uri.parse(rootUriString)

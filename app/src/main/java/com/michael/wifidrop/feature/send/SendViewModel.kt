@@ -9,6 +9,7 @@ import androidx.lifecycle.viewModelScope
 import com.michael.wifidrop.core.common.DispatcherProvider
 import com.michael.wifidrop.core.domain.*
 import com.michael.wifidrop.core.network.NetworkUtils
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import java.io.File
@@ -30,27 +31,44 @@ class SendViewModel(
     private val _events = MutableSharedFlow<SendUiEvent>()
     val events: SharedFlow<SendUiEvent> = _events.asSharedFlow()
 
-    init {
-        viewModelScope.launch {
-            discoverDevices().collect { devices ->
-                _state.update { it.copy(nearbyDevices = devices) }
-            }
-        }
+    private var discoveryJob: Job? = null
 
+    init {
         viewModelScope.launch(dispatchers.io) {
             val ip = NetworkUtils.getActiveLocalIp()
             _state.update { it.copy(localIp = ip) }
         }
     }
 
+    private fun refreshDiscovery() {
+        val shouldDiscover =
+            _state.value.selectedItems.isNotEmpty() && _state.value.webShareSession == null
+        discoveryJob?.cancel()
+        discoveryJob = null
+        if (shouldDiscover) {
+            discoveryJob = viewModelScope.launch(dispatchers.io) {
+                discoverDevices().collect { devices ->
+                    _state.update { it.copy(nearbyDevices = devices) }
+                }
+            }
+        } else {
+            _state.update { it.copy(nearbyDevices = emptyList()) }
+        }
+    }
+
     fun onFilesSelected(uris: List<String>) {
-        viewModelScope.launch(dispatchers.default) {
-            _state.update { it.copy(isProcessing = true) }
+        viewModelScope.launch(dispatchers.io) {
+            _state.update {
+                it.copy(isProcessing = true, processingMessage = "Reading selected files…")
+            }
             val newItems = uris.mapNotNull { uriStr ->
                 try {
                     val uri = Uri.parse(uriStr)
                     val isTreeUri = uriStr.contains("tree") || isUriDirectory(context, uri)
                     if (isTreeUri) {
+                        _state.update {
+                            it.copy(processingMessage = "Scanning folder contents…")
+                        }
                         buildFolderTree(uriStr).getOrNull()
                     } else {
                         val (name, size) = getFileNameAndSize(context, uri)
@@ -63,8 +81,13 @@ class SendViewModel(
             _state.update { s ->
                 val existingUris = s.selectedItems.map { it.uriString }.toSet()
                 val uniqueNewItems = newItems.filter { it.uriString !in existingUris }
-                s.copy(isProcessing = false, selectedItems = s.selectedItems + uniqueNewItems)
+                s.copy(
+                    isProcessing = false,
+                    processingMessage = "",
+                    selectedItems = s.selectedItems + uniqueNewItems,
+                )
             }
+            refreshDiscovery()
         }
     }
 
@@ -72,6 +95,7 @@ class SendViewModel(
         _state.update { s ->
             s.copy(selectedItems = s.selectedItems.filter { it.uriString != item.uriString })
         }
+        refreshDiscovery()
     }
 
     private fun isUriDirectory(context: Context, uri: Uri): Boolean {
@@ -106,26 +130,37 @@ class SendViewModel(
 
     fun onSendTapped(target: DiscoveredDevice) {
         viewModelScope.launch(dispatchers.io) {
-            startSend(state.value.selectedItems, target)
-                .onSuccess { sessionId ->
-                    _events.emit(SendUiEvent.NavigateToProgress(sessionId))
-                    observeActiveSession(sessionId)
-                }
-                .onFailure {
-                    _events.emit(SendUiEvent.ShowError(it.message ?: "Send failed"))
-                }
+            _state.update { it.copy(isConnecting = true, processingMessage = "Connecting to ${target.displayName}…") }
+            try {
+                startSend(state.value.selectedItems, target)
+                    .onSuccess { sessionId ->
+                        _events.emit(SendUiEvent.NavigateToProgress(sessionId))
+                        observeActiveSession(sessionId)
+                    }
+                    .onFailure {
+                        _events.emit(SendUiEvent.ShowError(it.message ?: "Send failed"))
+                    }
+            } finally {
+                _state.update { it.copy(isConnecting = false, processingMessage = "") }
+            }
         }
     }
 
     fun onWebShareTapped() {
         viewModelScope.launch(dispatchers.io) {
-            startWebShare(state.value.selectedItems)
-                .onSuccess { session ->
-                    _state.update { it.copy(webShareSession = session) }
-                }
-                .onFailure {
-                    _events.emit(SendUiEvent.ShowError("Web share failed to initialize on this network."))
-                }
+            _state.update { it.copy(isStartingWebShare = true, processingMessage = "Starting web share…") }
+            try {
+                startWebShare(state.value.selectedItems)
+                    .onSuccess { session ->
+                        _state.update { it.copy(webShareSession = session) }
+                        refreshDiscovery()
+                    }
+                    .onFailure {
+                        _events.emit(SendUiEvent.ShowError("Web share failed to initialize on this network."))
+                    }
+            } finally {
+                _state.update { it.copy(isStartingWebShare = false, processingMessage = "") }
+            }
         }
     }
 
@@ -133,6 +168,7 @@ class SendViewModel(
         viewModelScope.launch(dispatchers.io) {
             _state.update { it.copy(webShareSession = null) }
             transferRepository.cancelSession(UUID.randomUUID())
+            refreshDiscovery()
         }
     }
 
@@ -144,7 +180,7 @@ class SendViewModel(
     }
 
     private fun observeActiveSession(id: UUID) {
-        viewModelScope.launch {
+        viewModelScope.launch(dispatchers.io) {
             transferRepository.observeActiveSessions().collect { sessions ->
                 val active = sessions.find { it.id == id }
                 _state.update { it.copy(activeSession = active) }
@@ -182,8 +218,14 @@ data class SendUiState(
     val activeSession: TransferSession? = null,
     val webShareSession: WebShareSession? = null,
     val isProcessing: Boolean = false,
-    val localIp: String = ""
-)
+    val isConnecting: Boolean = false,
+    val isStartingWebShare: Boolean = false,
+    val processingMessage: String = "",
+    val localIp: String = "",
+) {
+    val isBusy: Boolean
+        get() = isProcessing || isConnecting || isStartingWebShare
+}
 
 sealed class SendUiEvent {
     data class ShowError(val message: String) : SendUiEvent()

@@ -221,7 +221,7 @@ open class KtorLocalServer(
         output.flush()
     }
 
-    private suspend fun buildZipStream(folder: TransferItem.Folder, out: java.io.OutputStream) = withContext(dispatchers.default) {
+    private suspend fun buildZipStream(folder: TransferItem.Folder, out: java.io.OutputStream) = withContext(dispatchers.io) {
         ZipOutputStream(out).use { zip ->
             var writtenBytes = 0L
             folder.entries.forEach { entry ->

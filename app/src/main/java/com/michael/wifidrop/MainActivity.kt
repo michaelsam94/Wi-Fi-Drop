@@ -39,7 +39,13 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.runtime.produceState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import android.graphics.Bitmap
+import androidx.compose.foundation.Image
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -139,9 +145,6 @@ fun MainAppScreen(
             add(Manifest.permission.ACCESS_FINE_LOCATION)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 add(Manifest.permission.NEARBY_WIFI_DEVICES)
-                add(Manifest.permission.READ_MEDIA_IMAGES)
-                add(Manifest.permission.READ_MEDIA_VIDEO)
-                add(Manifest.permission.READ_MEDIA_AUDIO)
             } else {
                 add(Manifest.permission.READ_EXTERNAL_STORAGE)
                 if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
@@ -303,6 +306,35 @@ fun PermissionRequestOverlay(onAccept: () -> Unit) {
     }
 }
 
+@Composable
+fun LoadingOverlay(message: String, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.4f)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Card(
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 32.dp, vertical = 24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                CircularProgressIndicator(strokeWidth = 3.dp)
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodyMedium,
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SendScreen(
@@ -348,6 +380,7 @@ fun SendScreen(
         }
     }
 
+    Box(modifier = Modifier.fillMaxSize()) {
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -383,6 +416,7 @@ fun SendScreen(
                     ) {
                         Button(
                             onClick = { selectFilesLauncher.launch(arrayOf("*/*")) },
+                            enabled = !state.isBusy,
                             shape = RoundedCornerShape(16.dp),
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = MaterialTheme.colorScheme.primaryContainer,
@@ -400,6 +434,7 @@ fun SendScreen(
 
                         Button(
                             onClick = { selectDirectoryLauncher.launch(null) },
+                            enabled = !state.isBusy,
                             shape = RoundedCornerShape(16.dp),
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = MaterialTheme.colorScheme.primary,
@@ -415,19 +450,6 @@ fun SendScreen(
                             Text("Folders", fontWeight = FontWeight.Bold)
                         }
                     }
-                }
-            }
-        }
-
-        if (state.isProcessing) {
-            item {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(24.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    CircularProgressIndicator()
                 }
             }
         }
@@ -752,6 +774,13 @@ fun SendScreen(
             Spacer(modifier = Modifier.height(36.dp))
         }
     }
+
+        if (state.isBusy) {
+            LoadingOverlay(
+                message = state.processingMessage.ifBlank { "Working…" },
+            )
+        }
+    }
 }
 
 @Composable
@@ -762,6 +791,7 @@ fun ReceiveScreen(
 ) {
     var deviceNameInput by remember { mutableStateOf(Build.MODEL ?: "Receiver Node") }
 
+    Box(modifier = Modifier.fillMaxSize()) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -813,6 +843,7 @@ fun ReceiveScreen(
                 if (!state.isAdvertising) {
                     Button(
                         onClick = { viewModel.startAdvertising(deviceNameInput) },
+                        enabled = !state.isBusy,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = MaterialTheme.colorScheme.primary,
                             contentColor = MaterialTheme.colorScheme.onPrimary
@@ -948,6 +979,13 @@ fun ReceiveScreen(
                     textAlign = TextAlign.Center
                 )
             }
+        }
+    }
+
+        if (state.isBusy) {
+            LoadingOverlay(
+                message = state.processingMessage.ifBlank { "Starting receiver…" },
+            )
         }
     }
 }
@@ -1313,35 +1351,40 @@ fun ActiveTransferCard(
 
 @Composable
 fun QrCodeDisplay(text: String, modifier: Modifier = Modifier) {
-    Canvas(modifier = modifier) {
-        val sizePx = size.width
-        try {
-            val qrCodeWriter = QRCodeWriter()
-            val bitMatrix = qrCodeWriter.encode(text, BarcodeFormat.QR_CODE, 512, 512)
-            val matrixWidth = bitMatrix.width
-            val matrixHeight = bitMatrix.height
-            val cellWidth = sizePx / matrixWidth
-            val cellHeight = sizePx / matrixHeight
-
-            for (x in 0 until matrixWidth) {
-                for (y in 0 until matrixHeight) {
-                    if (bitMatrix.get(x, y)) {
-                        drawRect(
-                            color = Color(0xFF0F172A),
-                            topLeft = Offset(x * cellWidth, y * cellHeight),
-                            size = Size(cellWidth + 1f, cellHeight + 1f)
-                        )
-                    } else {
-                        drawRect(
-                            color = Color.White,
-                            topLeft = Offset(x * cellWidth, y * cellHeight),
-                            size = Size(cellWidth + 1f, cellHeight + 1f)
+    val qrBitmap by produceState<ImageBitmap?>(initialValue = null, key1 = text) {
+        value = withContext(Dispatchers.Default) {
+            try {
+                val qrCodeWriter = QRCodeWriter()
+                val bitMatrix = qrCodeWriter.encode(text, BarcodeFormat.QR_CODE, 512, 512)
+                val width = bitMatrix.width
+                val height = bitMatrix.height
+                val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                for (x in 0 until width) {
+                    for (y in 0 until height) {
+                        bitmap.setPixel(
+                            x,
+                            y,
+                            if (bitMatrix.get(x, y)) android.graphics.Color.BLACK else android.graphics.Color.WHITE,
                         )
                     }
                 }
+                bitmap.asImageBitmap()
+            } catch (e: Exception) {
+                e.printStackTrace()
+                null
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
+        }
+    }
+
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+        if (qrBitmap == null) {
+            CircularProgressIndicator(modifier = Modifier.size(32.dp), strokeWidth = 3.dp)
+        } else {
+            Image(
+                bitmap = qrBitmap!!,
+                contentDescription = "QR code",
+                modifier = Modifier.fillMaxSize(),
+            )
         }
     }
 }

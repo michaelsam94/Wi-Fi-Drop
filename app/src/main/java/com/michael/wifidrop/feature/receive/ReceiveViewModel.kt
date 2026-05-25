@@ -45,7 +45,7 @@ class ReceiveViewModel(
         }
 
         // Collect incoming transfer notifications from the local server
-        viewModelScope.launch {
+        viewModelScope.launch(dispatchers.io) {
             ktorServer.incomingTransfers.collect { event ->
                 startDownload(event.senderIp, event.senderPort, event.senderName, event.itemsJson)
             }
@@ -54,20 +54,36 @@ class ReceiveViewModel(
 
     fun startAdvertising(deviceName: String) {
         viewModelScope.launch(dispatchers.io) {
-            _state.update { it.copy(isAdvertising = true, registeredName = deviceName) }
-            
-            // Start the Ktor server on port 33445 to listen for handshake notifications
+            _state.update {
+                it.copy(
+                    isStartingAdvertising = true,
+                    processingMessage = "Starting receiver…",
+                )
+            }
             try {
+                _state.update { it.copy(isAdvertising = true, registeredName = deviceName) }
+
                 ktorServer.start(port = 33445, shareItems = emptyList())
+
+                discoveryRepository.startAdvertising(deviceName)
+                    .onFailure {
+                        ktorServer.stop()
+                        _state.update {
+                            it.copy(isAdvertising = false, registeredName = null)
+                        }
+                        _events.emit(ReceiveUiEvent.ShowError("Could not publish receiver broadcast! Try re-connecting to Wi-Fi."))
+                    }
             } catch (e: Exception) {
                 e.printStackTrace()
-            }
-
-            discoveryRepository.startAdvertising(deviceName)
-                .onFailure {
-                    _state.update { it.copy(isAdvertising = false, registeredName = null) }
-                    _events.emit(ReceiveUiEvent.ShowError("Could not publish receiver broadcast! Try re-connecting to Wi-Fi."))
+                _state.update {
+                    it.copy(isAdvertising = false, registeredName = null)
                 }
+                _events.emit(ReceiveUiEvent.ShowError("Could not start receiver: ${e.localizedMessage}"))
+            } finally {
+                _state.update {
+                    it.copy(isStartingAdvertising = false, processingMessage = "")
+                }
+            }
         }
     }
 
@@ -95,7 +111,8 @@ class ReceiveViewModel(
                     bytesTransferred = 0,
                     bytesTotal = 0,
                     progress = 0f,
-                    currentFileName = "Preparing download..."
+                    currentFileName = "Preparing download…",
+                    processingMessage = "Receiving from $senderName…",
                 )
             }
 
@@ -227,6 +244,7 @@ class ReceiveViewModel(
                 _state.update {
                     it.copy(
                         isDownloading = false,
+                        processingMessage = "",
                         currentFileName = "Download completed! Saved in Downloads/Wifi-Drop directory.",
                         progress = 1.0f
                     )
@@ -236,6 +254,7 @@ class ReceiveViewModel(
                 _state.update {
                     it.copy(
                         isDownloading = false,
+                        processingMessage = "",
                         currentFileName = "Download failed: ${e.localizedMessage}"
                     )
                 }
@@ -270,8 +289,11 @@ class ReceiveViewModel(
     }
 
     override fun onCleared() {
+        viewModelScope.launch(dispatchers.io) {
+            discoveryRepository.stopAdvertising()
+            ktorServer.stop()
+        }
         super.onCleared()
-        stopAdvertising()
     }
 
     class Factory(
@@ -290,6 +312,7 @@ class ReceiveViewModel(
 
 data class ReceiveUiState(
     val isAdvertising: Boolean = false,
+    val isStartingAdvertising: Boolean = false,
     val registeredName: String? = null,
     val localIp: String = "",
     val isDownloading: Boolean = false,
@@ -297,8 +320,12 @@ data class ReceiveUiState(
     val bytesTransferred: Long = 0,
     val bytesTotal: Long = 0,
     val senderName: String = "",
-    val progress: Float = 0f
-)
+    val progress: Float = 0f,
+    val processingMessage: String = "",
+) {
+    val isBusy: Boolean
+        get() = isStartingAdvertising
+}
 
 sealed class ReceiveUiEvent {
     data class ShowError(val message: String) : ReceiveUiEvent()
