@@ -1,0 +1,6 @@
+{
+  "name": "Wi-Fi Drop",
+  "description": "Zero-internet, high-speed regional network file transfers using Ktor and ZXing.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
